@@ -1676,8 +1676,8 @@ UNIFI_MODEL_SPECS = {
     "USL8A":        {"part_number": "USW-Lite-8",           "u_height": 0, "ports": [("Port {n}", "1000base-t", 8)], "poe_budget": 0},
     "USPM16P":      {"part_number": "USW-Pro-Max-16-PoE",   "u_height": 0, "ports": [("Port {n}", "2.5gbase-t", 16), ("SFP+ {n}", "10gbase-x-sfpp", 2)], "poe_budget": 180},
     "USW Pro Max 16 PoE":{"part_number": "USW-Pro-Max-16-PoE","u_height": 0, "ports": [("Port {n}", "2.5gbase-t", 16), ("SFP+ {n}", "10gbase-x-sfpp", 2)], "poe_budget": 180},
-    "USPM24P":      {"part_number": "USW-Pro-Max-24-PoE",   "u_height": 1, "ports": [("Port {n}", "1000base-t", 16), ("Port {n}", "2.5gbase-t", 8), ("SFP+ {n}", "10gbase-x-sfpp", 2)], "poe_budget": 400},
-    "USW Pro Max 24 PoE":{"part_number": "USW-Pro-Max-24-PoE","u_height": 1, "ports": [("Port {n}", "1000base-t", 16), ("Port {n}", "2.5gbase-t", 8), ("SFP+ {n}", "10gbase-x-sfpp", 2)], "poe_budget": 400},
+    "USPM24P":      {"part_number": "USW-Pro-Max-24-PoE",   "u_height": 1, "ports": [("Port {n}", "1000base-t", 16), ("Port {n+16}", "2.5gbase-t", 8), ("SFP+ {n}", "10gbase-x-sfpp", 2)], "poe_budget": 400},
+    "USW Pro Max 24 PoE":{"part_number": "USW-Pro-Max-24-PoE","u_height": 1, "ports": [("Port {n}", "1000base-t", 16), ("Port {n+16}", "2.5gbase-t", 8), ("SFP+ {n}", "10gbase-x-sfpp", 2)], "poe_budget": 400},
     "USW Pro 8 PoE":{"part_number": "USW-Pro-8-PoE",        "u_height": 0, "ports": [("Port {n}", "1000base-t", 8), ("SFP+ {n}", "10gbase-x-sfpp", 2)], "poe_budget": 120},
     "USW Enterprise 8 PoE":{"part_number": "USW-Enterprise-8-PoE","u_height": 0, "ports": [("Port {n}", "2.5gbase-t", 8), ("SFP+ {n}", "10gbase-x-sfpp", 2)], "poe_budget": 120},
     "US XG 16":     {"part_number": "US-XG-16",             "u_height": 1, "ports": [("Port {n}", "10gbase-t", 4), ("SFP+ {n}", "10gbase-x-sfpp", 12)], "poe_budget": 0},
@@ -1701,6 +1701,10 @@ UNIFI_MODEL_SPECS = {
 }
 
 
+_device_type_specs_done = set()
+_device_type_specs_lock = threading.Lock()
+
+
 def ensure_device_type_specs(nb, nb_device_type, model):
     """Ensure a device type has correct specs (part number, u_height, interface templates)
     based on the UNIFI_MODEL_SPECS database. Also cleans up duplicate templates."""
@@ -1708,6 +1712,18 @@ def ensure_device_type_specs(nb, nb_device_type, model):
     if not specs:
         return
 
+    # Serialize all template operations to prevent concurrent API races
+    with _device_type_specs_lock:
+        # Only process each device type once per run
+        if nb_device_type.id in _device_type_specs_done:
+            return
+        _device_type_specs_done.add(nb_device_type.id)
+
+        _ensure_device_type_specs_inner(nb, nb_device_type, model, specs)
+
+
+def _ensure_device_type_specs_inner(nb, nb_device_type, model, specs):
+    """Inner implementation of device type spec sync (called under lock)."""
     changed = False
     # Update part number and u_height if missing/wrong
     if specs.get("part_number") and (nb_device_type.part_number or "") != specs["part_number"]:
@@ -1731,13 +1747,24 @@ def ensure_device_type_specs(nb, nb_device_type, model):
             logger.warning(f"Failed to update device type specs for {model}: {e}")
 
     # Sync interface templates — delete all existing and recreate from specs
-    existing_templates = list(nb.dcim.interface_templates.filter(devicetype_id=nb_device_type.id))
+    dt_id = int(nb_device_type.id)
+    existing_templates = list(nb.dcim.interface_templates.filter(device_type_id=dt_id))
+    logger.debug(f"Fetched {len(existing_templates)} existing templates for {model} (device_type_id={dt_id})")
     expected_ports = []
     for port_spec in specs.get("ports", []):
         pattern, port_type, count = port_spec
-        if count == 1 and "{n}" not in pattern:
+        if count == 1 and "{n}" not in pattern and "{n+" not in pattern:
             # Single named port (e.g. "WAN 1", "eth0")
             expected_ports.append((pattern, port_type))
+        elif "{n+" in pattern:
+            # Offset pattern like "Port {n+16}" — start numbering at offset+1
+            import re as _re
+            m = _re.search(r'\{n\+(\d+)\}', pattern)
+            offset = int(m.group(1)) if m else 0
+            base_pattern = _re.sub(r'\{n\+\d+\}', '{}', pattern)
+            for i in range(1, count + 1):
+                name = base_pattern.format(offset + i)
+                expected_ports.append((name, port_type))
         else:
             for i in range(1, count + 1):
                 name = pattern.replace("{n}", str(i))
@@ -1765,7 +1792,10 @@ def ensure_device_type_specs(nb, nb_device_type, model):
         existing_set.add((name, tmpl_type))
 
     if expected_set == existing_set:
+        logger.debug(f"Interface templates for {model} already correct ({len(expected_set)} ports)")
         return  # Templates already correct
+
+    logger.debug(f"Template mismatch for {model}: expected={sorted(expected_set)}, existing={sorted(existing_set)}")
 
     # Delete all existing templates and recreate
     for tmpl in existing_by_name.values():
@@ -1831,20 +1861,8 @@ def process_device(unifi, nb, site, device, nb_ubiquity, tenant, unifi_device_ip
             except pynetbox.core.query.RequestError as e:
                 logger.error(f"Failed to create device type for {device_name} at site {site}: {e}")
                 return
-            if len(device.get("port_table", [])) > 0:
-                for port in device["port_table"]:
-                    if port["media"] == "GE":
-                        port_type = "1000base-t"
-                        try:
-                            template = nb.dcim.interface_templates.create({
-                                "device_type": nb_device_type.id,
-                                "name": port["name"],
-                                "type": port_type,
-                            })
-                            if template:
-                                logger.info(f"Interface template {port['name']} with ID {template.id} successfully added to NetBox.")
-                        except pynetbox.core.query.RequestError as e:
-                            logger.exception(f"Failed to create interface template for {device_name} at site {site}: {e}")
+        # Ensure device type has correct specs (ports, PoE, part number, etc.)
+        ensure_device_type_specs(nb, nb_device_type, device_model)
 
         # Check for existing device
         logger.debug(f"Checking if device already exists: {device_name} (serial: {device_serial})")

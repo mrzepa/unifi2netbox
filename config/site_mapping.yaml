@@ -1,9 +1,14 @@
 # Site mapping configuration
-# Format: unifi_site_name: netbox_site_name
-# Example:
+# Maps UniFi site names to NetBox site names when they differ.
+# Enable with UNIFI_USE_SITE_MAPPING=true in .env
+#
+# Format:
+#   "UniFi Site Name": "NetBox Site Name"
+#
+# Examples:
 # "Default": "Main Office"
 # "Remote Site": "Branch Office"
+# "Corporate Office": "HQ"
 
 # Add your site mappings below:
 "Default": "Default"
-# Add more mappings as needed
