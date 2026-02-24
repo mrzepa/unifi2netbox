@@ -5,11 +5,20 @@ logger = logging.getLogger(__name__)
 class WlanConf(BaseResource):
     BASE_PATH = 'rest'
     API_PATH = "/api/s"
+    INTEGRATION_API_PATH = "/sites"
+    INTEGRATION_ENDPOINT = "wifi/broadcasts"
 
     def __init__(self, unifi, site, **kwargs):
         self.unifi = unifi
         self.site = site
-        self.output_dir: str = kwargs.get('output_dir', "wlan_configs")
-        super().__init__(unifi, endpoint='wlanconf', site=self.site, api_path=self.API_PATH, base_path=self.BASE_PATH, **kwargs)
-
-
+        if getattr(unifi, "api_style", None) == "integration":
+            super().__init__(
+                unifi,
+                site,
+                endpoint=self.INTEGRATION_ENDPOINT,
+                api_path=self.INTEGRATION_API_PATH,
+                base_path=None,
+                **kwargs,
+            )
+        else:
+            super().__init__(unifi, endpoint='wlanconf', site=self.site, api_path=self.API_PATH, base_path=self.BASE_PATH, **kwargs)

@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME:-${GITEA_REF_NAME:-}}"
+          if [ -z "${TAG}" ] && [ -n "${GITHUB_REF:-}" ]; then
+            TAG="${GITHUB_REF##*/}"
+          fi
+          if [ -z "${TAG}" ]; then
+            echo "Could not resolve tag from ref."
+            exit 1
+          fi
+          PRERELEASE=false
+          if [[ "${TAG}" == *"-"* ]]; then
+            PRERELEASE=true
+          fi
+          echo "RELEASE_TAG=${TAG}" >> "${GITHUB_ENV}"
+          echo "RELEASE_PRERELEASE=${PRERELEASE}" >> "${GITHUB_ENV}"
+
+      - name: Create Gitea release (idempotent)
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${GITEA_TOKEN:-}" ]; then
+            echo "Missing secret GITEA_TOKEN"
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          tag = os.environ["RELEASE_TAG"]
+          prerelease = os.environ.get("RELEASE_PRERELEASE", "false").lower() == "true"
+          server_url = (os.environ.get("GITHUB_SERVER_URL") or os.environ.get("GITEA_SERVER_URL") or "").rstrip("/")
+          repo = os.environ.get("GITHUB_REPOSITORY") or os.environ.get("GITEA_REPOSITORY") or ""
+          token = os.environ["GITEA_TOKEN"]
+          sha = os.environ.get("GITHUB_SHA") or ""
+
+          if not server_url or not repo:
+              raise SystemExit("Missing repository context (server URL or repository slug).")
+
+          base = f"{server_url}/api/v1/repos/{repo}"
+          headers = {
+              "Authorization": f"token {token}",
+              "Content-Type": "application/json",
+              "Accept": "application/json",
+          }
+
+          existing_req = urllib.request.Request(
+              f"{base}/releases/tags/{tag}",
+              headers=headers,
+              method="GET",
+          )
+          try:
+              with urllib.request.urlopen(existing_req):
+                  print(f"Release for {tag} already exists. Skipping.")
+                  raise SystemExit(0)
+          except urllib.error.HTTPError as err:
+              if err.code != 404:
+                  body = err.read().decode("utf-8", errors="replace")
+                  raise SystemExit(f"Failed checking existing release ({err.code}): {body}")
+
+          payload = {
+              "tag_name": tag,
+              "target_commitish": sha,
+              "name": tag,
+              "body": f"Automated release for {tag}",
+              "draft": False,
+              "prerelease": prerelease,
+          }
+          data = json.dumps(payload).encode("utf-8")
+          create_req = urllib.request.Request(
+              f"{base}/releases",
+              data=data,
+              headers=headers,
+              method="POST",
+          )
+          with urllib.request.urlopen(create_req) as resp:
+              print(f"Created release for {tag} (HTTP {resp.status})")
+          PY

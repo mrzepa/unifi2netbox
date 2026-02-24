@@ -1,0 +1,31 @@
+[Unit]
+Description=UniFi to NetBox synchronization service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=unifi2netbox
+Group=unifi2netbox
+WorkingDirectory=/opt/unifi2netbox
+EnvironmentFile=/opt/unifi2netbox/.env
+ExecStart=/opt/unifi2netbox/venv/bin/python main.py -v
+
+# Restart on failure with back-off
+Restart=on-failure
+RestartSec=30
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/unifi2netbox/logs
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=unifi2netbox
+
+[Install]
+WantedBy=multi-user.target

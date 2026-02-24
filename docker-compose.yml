@@ -1,0 +1,13 @@
+services:
+  unifi2netbox:
+    build:
+      context: .
+    image: unifi2netbox:latest
+    container_name: unifi2netbox
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+    command: ["python", "main.py", "-v"]
+    restart: unless-stopped

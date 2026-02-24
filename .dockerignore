@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+.git/
+.gitignore
+.claude/
+.idea/
+.DS_Store
+.unifi_session.json
+__pycache__/
+*.py[cod]
+logs/*
+!logs/.keep
+*.md
+LICENSE
+docker-compose*.yml
+lxc/

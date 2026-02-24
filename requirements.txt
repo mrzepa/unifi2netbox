@@ -4,4 +4,4 @@ pynetbox~=7.4.1
 PyYAML~=6.0.2
 python-dotenv~=1.0.1
 python-slugify~=8.0.4
-urllib3~=2.2.3
+urllib3~=2.6.3
