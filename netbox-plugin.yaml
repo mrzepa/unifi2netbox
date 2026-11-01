@@ -1,0 +1,5 @@
+name: netbox-unifi-sync
+slug: netbox-unifi-sync
+description: Sync UniFi devices and metadata into NetBox
+compatibility:
+  - release: 0.1.0

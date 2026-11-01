@@ -1,0 +1,68 @@
+name: Auto Tag
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-tag-main
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Check if commit is already tagged
+        id: precheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git tag --points-at "${GITHUB_SHA}" | grep -Eq '^v[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
+            echo "skip=true" >> "${GITHUB_OUTPUT}"
+            echo "Commit already has a release tag; skipping auto-tag."
+          else
+            echo "skip=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Resolve next tag
+        if: steps.precheck.outputs.skip != 'true'
+        id: next
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --tags --force
+
+          LATEST_TAG="$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+(\.[0-9]+)?$' | sort -V | tail -n 1 || true)"
+          if [ -z "${LATEST_TAG}" ]; then
+            NEXT_TAG="v0.1.0"
+          else
+            VERSION="${LATEST_TAG#v}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "${VERSION}"
+            if [ -z "${PATCH:-}" ]; then
+              PATCH=0
+            fi
+            NEXT_TAG="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+          fi
+
+          echo "next_tag=${NEXT_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "Next tag: ${NEXT_TAG}"
+
+      - name: Create and push tag
+        if: steps.precheck.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.next.outputs.next_tag }}"
+          git tag -a "${TAG}" "${GITHUB_SHA}" -m "Release ${TAG}"
+          git push origin "${TAG}"

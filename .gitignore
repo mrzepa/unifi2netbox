@@ -1,6 +1,15 @@
 .env
 .unifi_session.json
+.coverage
+.pytest_cache/
 !logs/.keep
 logs/*
 config/config.yaml
 config.yaml
+__pycache__/
+*.py[cod]
+.idea/
+.DS_Store
+.claude/
+client-privatekey
+client-publickey

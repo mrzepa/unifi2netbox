@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "netbox-unifi-sync"
+version = "0.1.0"
+description = "Sync UniFi devices and data into NetBox"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "unifi2netbox maintainers" }]
+dependencies = [
+  "requests>=2.32.0",
+  "python-dotenv>=1.0.1",
+  "pynetbox>=7.4.1",
+  "urllib3>=2.2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/im-konge/unifi2netbox"
+Repository = "https://github.com/im-konge/unifi2netbox"
+Issues = "https://github.com/im-konge/unifi2netbox/issues"
+
+[tool.setuptools]
+packages = ["netbox_unifi_sync"]

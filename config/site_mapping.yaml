@@ -1,9 +1,0 @@
-# Site mapping configuration
-# Format: unifi_site_name: netbox_site_name
-# Example:
-# "Default": "Main Office"
-# "Remote Site": "Branch Office"
-
-# Add your site mappings below:
-"Default": "Default"
-# Add more mappings as needed

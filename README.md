@@ -1,241 +1,288 @@
-# NetBox and UniFi Integration
+w# unifi2netbox
 
-This project provides a mechanism to integrate **NetBox** with **UniFi**, allowing you to synchronize devices and manage conflicts while maintaining accurate data within NetBox.
+Production-focused synchronization from UniFi controllers to NetBox.
 
-## Features
+Sync direction is primarily **UniFi -> NetBox**.
+Exception: when DHCP-to-static conversion is enabled and triggered, the tool updates device IP config on UniFi.
 
-- **Device Synchronization**: Automatically create or update devices from UniFi into NetBox.
-- **Site Mapping**: Customizable mapping between UniFi site names and NetBox site names via YAML configuration.
-- **Conflict Resolution**: Handle duplicate VRFs, IP addresses, and prefixes with advanced error handling and retry mechanisms.
-- **Custom Connection Management**: Optimize performance with configurable connection pooling for NetBox API communications.
-- **Detailed Logging**: Comprehensive logging with verbose mode for debugging and monitoring.
-- **Modular Design**: Improved code organization with a dedicated UniFi module for better maintainability.
+[Quick Start](#quick-start) • [Configuration](#configuration) • [Cleanup](#cleanup) • [Testing](#testing) • [Documentation](#documentation)
 
-## Requirements
+## At a Glance
 
-- Python 3.12 or later
-- Installed Python packages:
-  - `pynetbox`
-  - `requests`
-  - `pyotp`
-  - `PyYAML`
-  - `python-dotenv`
-  - `python-slugify`
-  - `urllib3`
+| Topic | Details |
+|---|---|
+| UniFi API support | Integration API v1 (preferred), session login fallback (UniFi OS + legacy) |
+| Auth methods | API key or username/password (optional MFA secret) |
+| Sync scope | Devices, interfaces, VLANs, WLANs, uplink cables, device type templates |
+| Deployment | Docker, Proxmox LXC helper, bare-metal/VM via systemd installer |
+| Test suite | 109 pytest tests |
 
-## Installation
+## Sync Scope
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/mrzepa/unifi2netbox.git
-   cd unifi2netbox
-   ```
+| Area | Behavior |
+|---|---|
+| Devices | Creates/updates devices and key metadata in NetBox |
+| Interfaces | Syncs physical/radio interfaces when enabled |
+| VLANs | Syncs VLANs from UniFi network data |
+| WLANs | Syncs SSIDs as wireless LAN objects |
+| Cables | Syncs uplink cable relationships |
+| IP behavior | Imports/updates primary IPs in NetBox; optional DHCP->static conversion can write static IP settings back to UniFi |
+| Device types | Enriches models with interface/console/power templates |
+| Manual overrides | Existing devices are matched by serial globally; site is never auto-moved. Per-field preservation via `KEEP_EXISTING_*` env or `unifi-keep-*` tags |
 
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+## Architecture
 
-3. Create a `.env` file at the root of the project to store sensitive information such as usernames, passwords, and tokens. The `.env` file should look like this:
-   ```plaintext
-   UNIFI_USERNAME=your-unifi-username
-   UNIFI_PASSWORD=your-unifi-password
-   UNIFI_MFA_SECRET=your-unifi-mfa-secret
-   NETBOX_TOKEN=your-netbox-api-token
-   ```
+```mermaid
+flowchart LR
+    A["UniFi Controller(s)"] --> B["UniFi API Wrapper (unifi/)"]
+    B --> C["Normalization + Mapping (main.py)"]
+    C --> D["NetBox API (pynetbox)"]
+```
 
-4. Copy the sample configuration file to `config/config.yaml`:
-   ```bash
-   cp config/config.yaml.SAMPLE config/config.yaml
-   ```
-   
-5. Update the `config/config.yaml` file with your company-specific information (such as URLs, roles, and tenant names). For example:
-   ```yaml
-   UNIFI:
-     URLS:
-       - https://<controller-ip>:8443
-   NETBOX:
-     URL: http://localhost:8080
-     ROLES:
-       WIRELESS: Wireless AP
-       LAN: Switch
-     TENANT: Organization Name
-   ```
+Thread pools are configurable with:
+- `MAX_CONTROLLER_THREADS` (default 5)
+- `MAX_SITE_THREADS` (default 8)
+- `MAX_DEVICE_THREADS` (default 8)
 
-6. Configure site mapping (optional):
-   Site mapping is only needed if your UniFi site names differ from NetBox site names. You have two options for configuring site mappings:
-   
-   **Option 1: Configure in config.yaml (recommended)**
-   ```yaml
-   UNIFI:
-     # Other UNIFI settings...
-     # Set to true to use external site_mapping.yaml file
-     USE_SITE_MAPPING: false
-     # Define mappings directly in config.yaml
-     SITE_MAPPINGS:
-       "UniFi Site Name": "NetBox Site Name"
-       "Corporate Office": "HQ"
-   ```
-   
-   **Option 2: Use external mapping file**
-   Set `USE_SITE_MAPPING: true` in config.yaml, then edit `config/site_mapping.yaml`:
-   ```yaml
-   "UniFi Site Name": "NetBox Site Name"
-   "Corporate Office": "HQ"
-   "Remote Branch": "Branch-01"
-   ```
-   
-   If both options are configured, mappings in config.yaml take precedence.
-## Obtaining the UniFi OTP Seed (MFA Secret)
+## Quick Start
 
-The OTP seed (also referred to as the MFA Secret) is required for Multi-Factor Authentication and must be added to the `.env` file. Follow these steps to obtain it:
-
-1. **Log in to your UniFi account**:
-   Go to [https://account.ui.com](https://account.ui.com) and log in with your UniFi credentials.
-
-2. **Access your profile**:
-   Once logged in, select your profile in the top-right corner of the page.
-
-3. **Manage security settings**:
-   In the profile menu, select **Manage Security**.
-
-4. **Retrieve the MFA Secret**:
-   Under the "Multi-Factor Authentication" section:
-   - Click: Add New Method.
-   - Select App authentication.
-   - Select "Enter code manually", or use a QR code scanner.
-   - The text output will contain the OTP seed (a base32 string). This is your `UNIFI_MFA_SECRET`.
-   - Make sure to select App authentication as your primary MFA.
-
-5. Add the OTP seed to your `.env` file:
-   ```plaintext
-   UNIFI_MFA_SECRET=your-otp-seed
-   ```
-
-If you do not have 2FA enabled, you will need to set it up to generate a new OTP seed.
-
-## Usage
-
-### Running the Integration Script
-
-Once the `.env` and `config/config.yaml` files are properly set up, you can run the script:
+### Docker (recommended)
 
 ```bash
-python main.py
+cp .env.example .env
+# Edit .env with UniFi + NetBox credentials
+docker compose pull
+docker compose up -d
+docker compose logs -f
 ```
 
-For verbose logging with detailed debug information:
+Published container images:
+- `ghcr.io/patricklind/unifi2netbox:latest` (default branch)
+- `ghcr.io/patricklind/unifi2netbox:<branch>`
+- `ghcr.io/patricklind/unifi2netbox:<git-sha>`
+- `ghcr.io/patricklind/unifi2netbox:<tag>` (for `v*` tags)
+
+`docker-compose.yml` defaults to `ghcr.io/patricklind/unifi2netbox:latest`.
+
+Behavior:
+- `.env.example` sets `SYNC_INTERVAL=600` (10 minutes)
+- If `SYNC_INTERVAL` is unset, code default is `0` (run once, then exit)
+
+### Proxmox LXC
 
 ```bash
-python main.py -v
+bash lxc/create-lxc.sh [CTID]
+# Edit /opt/unifi2netbox/.env inside the container
+systemctl start unifi2netbox
 ```
 
-### Site Mapping
+### Bare-metal / VM
 
-Site mapping is optional and only needed if your UniFi site names differ from NetBox site names. You have two ways to configure site mappings:
-
-#### Option 1: Configure in config.yaml (recommended)
-
-Define your mappings directly in the main configuration file:
-
-```yaml
-UNIFI:
-  # Other settings...
-  # Set to false to disable external mapping file
-  USE_SITE_MAPPING: false
-  # Define mappings directly here
-  SITE_MAPPINGS:
-    "UniFi Site Name": "NetBox Site Name"
-    "Corporate Office": "HQ"
+```bash
+sudo bash lxc/install.sh
+# Edit /opt/unifi2netbox/.env
+systemctl start unifi2netbox
+journalctl -u unifi2netbox -f
 ```
 
-#### Option 2: Use external mapping file
+## Configuration
 
-Enable the external mapping file in config.yaml:
+Configuration source:
+1. Environment variables (`.env`)
 
-```yaml
-UNIFI:
-  # Other settings...
-  USE_SITE_MAPPING: true
+### Required Variables
+
+| Variable | Required | Notes |
+|---|---|---|
+| `UNIFI_URLS` | Yes | Comma-separated URLs or JSON array |
+| `NETBOX_URL` | Yes | NetBox base URL |
+| `NETBOX_TOKEN` | Yes | NetBox API token |
+| `NETBOX_IMPORT_TENANT` or `NETBOX_TENANT` | Yes | Tenant used for synced objects (`NETBOX_IMPORT_TENANT` wins if both are set) |
+| `UNIFI_API_KEY` | Conditionally | Required if not using username/password |
+| `UNIFI_USERNAME` + `UNIFI_PASSWORD` | Conditionally | Required if not using API key |
+
+### UniFi API Modes
+
+| Mode | URL examples | Auth |
+|---|---|---|
+| Integration API v1 | `https://controller.example.com/proxy/network/integration/v1` or `https://controller.example.com/integration/v1` | API key (`UNIFI_API_KEY`) |
+| Session login fallback | Controller base URL | Username/password (`UNIFI_USERNAME`, `UNIFI_PASSWORD`), optional `UNIFI_MFA_SECRET` |
+
+When API key mode is used, header candidates are probed automatically (`X-API-KEY`, `Authorization`, or custom `UNIFI_API_KEY_HEADER`).
+`unifi.ui.com` cloud API keys are not the same as local Network Application Integration API keys and are not supported as drop-in replacements here.
+
+### Common Toggles
+
+| Variable | Purpose |
+|---|---|
+| `SYNC_INTERFACES` | Sync interfaces |
+| `SYNC_VLANS` | Sync VLANs |
+| `SYNC_WLANS` | Sync WLANs |
+| `SYNC_CABLES` | Sync uplink cables |
+| `SYNC_STALE_CLEANUP` | Mark missing UniFi devices offline |
+| `NETBOX_CLEANUP` | Enable destructive cleanup phase |
+| `CLEANUP_STALE_DAYS` | Stale-device grace period before deletion |
+| `NETBOX_VRF_MODE` | `none`, `existing`, `create` |
+| `NETBOX_DEFAULT_VRF` | Override site-based VRF selection with one VRF name for all imported IPs |
+| `NETBOX_SERIAL_MODE` | `mac`, `unifi`, `id`, `none` |
+| `UNIFI_SPECS_AUTO_REFRESH` | Refresh device specs from upstream Device Type Library at startup |
+| `UNIFI_SPECS_INCLUDE_STORE` | Also enrich specs from UniFi Store technical specs (slower) |
+| `SYNC_INTERVAL` | Loop interval in seconds (`0` = run once) |
+
+HTTP tuning:
+- `UNIFI_REQUEST_TIMEOUT` (default 15s)
+- `UNIFI_HTTP_RETRIES` (default 3)
+- `UNIFI_RETRY_BACKOFF_BASE` (default 1.0)
+- `UNIFI_RETRY_BACKOFF_MAX` (default 30.0)
+- `UNIFI_VERIFY_SSL` (default `true`)
+- `NETBOX_VERIFY_SSL` (default `true`)
+- `UNIFI_PERSIST_SESSION` (default `true`)
+
+Full reference: [`docs/configuration.md`](docs/configuration.md).
+
+## Device Type Enrichment
+
+Runtime merge sources:
+- Hardcoded `UNIFI_MODEL_SPECS` in `unifi/model_specs.py` (**46 models**)
+- Community bundle `data/ubiquiti_device_specs.json` (**173 by model**, **166 by part number**)
+- Optional upstream refresh from `netbox-community/devicetype-library` + UniFi Store specs
+
+Hardcoded fields override community values when both exist.
+
+Manual refresh command:
+```bash
+python3 tools/refresh_unifi_specs.py
 ```
 
-Then edit the `config/site_mapping.yaml` file:
+Resulting enrichment can include:
+- interface templates and media types
+- PoE mode/type metadata
+- console port templates
+- power port templates and draw fields
+- part number and physical attributes
 
-```yaml
-"UniFi Site Name": "NetBox Site Name"
-"Corporate Office": "HQ"
-"Remote Branch": "Branch-01"
+Details: [`docs/device-specs.md`](docs/device-specs.md).
+
+## Cleanup
+
+`NETBOX_CLEANUP=true` enables destructive cleanup after sync.
+
+> Warning: this can permanently delete NetBox data.
+
+Cleanup tasks:
+- stale devices (after grace period)
+- garbage/orphan interfaces (names containing `?`)
+- orphan IP addresses (unassigned)
+- orphan cables (missing terminations)
+- unused Ubiquiti device types
+
+Safety guide: [`docs/cleanup.md`](docs/cleanup.md).
+
+## Testing
+
+```bash
+pip install -r requirements.txt
+pip install pytest~=8.0
+pytest tests/ -v
 ```
 
-**Note:** If both options are configured, mappings in config.yaml take precedence over those in the external file.
+Current suite: **109 tests**.
 
-If a UniFi site name is not found in any mapping, the script will use the UniFi site name directly when looking for a matching NetBox site.
+## Project Layout
 
-### Logging
-
-The script logs information at different levels:
-
-- **INFO**: Standard operational information (default level)
-- **DEBUG**: Detailed debugging information (enabled with `-v` flag)
-- **WARNING**: Potential issues that don't prevent operation
-- **ERROR**: Problems that prevent specific operations
-- **CRITICAL**: Critical failures
-
-All logs are written to the `logs` directory. Logs are organized by severity (e.g., `info.log`, `error.log`) for easier debugging. Example of an error log:
-
-```plaintext
-2025-01-22 14:24:54,390 - ERROR - Unable to delete VRF at site X: '409 Conflict'
+```text
+.
+├── main.py
+├── sync/
+│   ├── ipam.py
+│   ├── log_sanitizer.py
+│   ├── runtime_config.py
+│   └── vrf.py
+├── unifi/
+│   ├── unifi.py
+│   ├── resources.py
+│   ├── sites.py
+│   ├── device.py
+│   ├── model_specs.py
+│   ├── spec_refresh.py
+│   ├── networkconf.py
+│   └── wlanconf.py
+├── data/
+│   └── ubiquiti_device_specs.json
+├── tools/
+│   └── refresh_unifi_specs.py
+├── docs/
+├── tests/
+├── lxc/
+├── Dockerfile
+├── docker-compose.yml
+└── requirements.txt
 ```
 
-### Troubleshooting
+## Documentation
 
-If you encounter issues with the integration:
+- [`docs/configuration.md`](docs/configuration.md)
+- [`docs/cleanup.md`](docs/cleanup.md)
+- [`docs/device-specs.md`](docs/device-specs.md)
+- [`docs/architecture.md`](docs/architecture.md)
+- [`docs/troubleshooting.md`](docs/troubleshooting.md)
+- [`docs/faq.md`](docs/faq.md)
+- [`CHANGELOG.md`](CHANGELOG.md)
 
-1. **Run with verbose logging**: Use the `-v` flag to enable detailed debug output
-   ```bash
-   python main.py -v
-   ```
+## Security Note
 
-2. **Check log files**: Review the logs in the `logs` directory for specific errors
+TLS verification is configurable per side:
+- `UNIFI_VERIFY_SSL` (default `true`)
+- `NETBOX_VERIFY_SSL` (default `true`)
 
-3. **Verify site mapping**: Ensure your site mapping in `config/site_mapping.yaml` correctly maps UniFi sites to NetBox sites
+Set either to `false` only if you explicitly accept the risk (for example lab environments with self-signed certs).
 
-4. **Authentication issues**: 
-   - Verify your UniFi credentials and MFA secret in the `.env` file
-   - Check that your NetBox API token has appropriate permissions
+## Support
 
-5. **API connectivity**: 
-   - Ensure the UniFi controller is accessible at the configured URL
-   - Verify the NetBox API is reachable and responding
+If my repositories are useful:
 
-6. **Session issues**: If you encounter authentication problems, try deleting the session file and running again
+<p align="center">
+  <a href="https://ko-fi.com/patricklind" title="Support on Ko-fi">
+    <img src="https://storage.ko-fi.com/cdn/kofi6.png?v=6" height="50" alt="Support on Ko-fi"/>
+  </a>
+  &nbsp;&nbsp;
+  <a href="https://www.buymeacoffee.com/patricklind" title="Support on Buy Me a Coffee">
+    <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" height="50" alt="Support on Buy Me a Coffee"/>
+  </a>
+</p>
 
-### Handling Conflicts
+## Star History
 
-If there are conflicts (e.g., duplicate device names, VRFs, or IP addresses), the script:
-- Logs the issue in the error log.
-- Attempts to resolve it automatically where possible.
-- Skips problematic devices or sites if the issue cannot be resolved.
-
-## Contributing
-
-Contributions are welcome! To contribute to this project:
-1. Fork the repository.
-2. Create a branch for your feature or bugfix:
-   ```bash
-   git checkout -b feature/my-feature
-   ```
-3. Commit your changes and push the branch:
-   ```bash
-   git commit -m "Add my feature"
-   git push origin feature/my-feature
-   ```
-4. Open a pull request.
+[![Star History Chart](https://api.star-history.com/svg?repos=unifi2netbox/unifi2netbox&type=date&legend=top-left)](https://www.star-history.com/#unifi2netbox/unifi2netbox&type=date&legend=top-left)
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+MIT (`LICENSE`).
 
-## Acknowledgments
 
-- This project was inspired by the need for unified network management.
+## Maintainer Release (PyPI)
+
+Version bump locations for each release:
+- `pyproject.toml` → `[project].version`
+- `netbox_unifi_sync/version.py` → `__version__`
+- `netbox-plugin.yaml` → `compatibility[].release`
+
+Tagging options:
+1. Recommended: run GitHub Actions **Create Release Tag** workflow manually and provide `X.Y.Z`.
+2. Manual git tagging:
+   ```bash
+   git tag -a vX.Y.Z -m "Release vX.Y.Z"
+   git push origin vX.Y.Z
+   ```
+
+Workflow chain:
+- `release.yml` runs on `v*` tag push, gates on lint + tests, then creates the GitHub Release.
+- `publish-python-package.yml` runs on `release: published` and publishes to PyPI.
+- `publish-python-package.yml` can also be run manually for a publish retry.
+
+PyPI Trusted Publisher (OIDC) setup:
+1. In PyPI, open project settings → **Publishing** → **Add a publisher**.
+2. Set owner to this GitHub org/user, repository to `unifi2netbox`.
+3. Set workflow to `.github/workflows/publish-python-package.yml`.
+4. Set environment to `pypi` (must match workflow environment).
+5. Save and test by publishing a tagged release.
